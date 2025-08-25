@@ -1,0 +1,307 @@
+// generator & datasource
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AppointmentState {
+  EMAIL_PENDING
+  PENDING_PAYMENT
+  AWAITING_CASH
+  CONFIRMED
+  CANCELLED
+  EXPIRED
+  ORPHANED
+}
+
+enum FuelType {
+  NAFTA
+  DIESEL
+  GNC
+  HIBRIDO
+  ELECTRICO
+  OTRO
+}
+
+enum Result {
+  APROBADO
+  RECHAZADO
+}
+
+enum PlantRole {
+  ADMIN
+  OPERATOR
+}
+
+enum RoleGlobal {
+  SUPERADMIN
+}
+
+enum SlotStatus {
+  FREE
+  BOOKED
+  LOCKED
+}
+
+model Plant {
+  id             String  @id @default(uuid())
+  slug           String  @unique
+  name           String
+  contactEmail   String?
+  contactPhone   String?
+  address        String?
+  city           String?
+  province       String?
+  zip            String?
+  lat            Float?
+  lng            Float?
+  logoUrl        String?
+  primaryColor   String?
+  secondaryColor String?
+
+  daysAhead              Int @default(30)
+  lockMinutes            Int @default(30) // MP online
+  cashWindowMinutes      Int @default(4320) // 3 días en minutos
+  cancelReprogLimitHours Int @default(24)
+  reschedulesLimit       Int @default(2)
+  minYearAllowed         Int @default(1970)
+
+  enableNoPay       Boolean @default(true)
+  enableMercadoPago Boolean @default(true)
+
+  lines              Line[]
+  plantVehicleTypes  PlantVehicleType[]
+  weeklySchedules    WeeklySchedule[]
+  scheduleExceptions ScheduleException[]
+  slots              Slot[]
+  appointments       Appointment[]
+  memberships        Membership[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+}
+
+model VehicleType {
+  id           String             @id @default(uuid())
+  name         String             @unique
+  active       Boolean            @default(true)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  plantLinks   PlantVehicleType[]
+  // Back-relation desde Appointment
+  appointments Appointment[]
+}
+
+model PlantVehicleType {
+  id            String      @id @default(uuid())
+  plantId       String
+  vehicleTypeId String
+  plant         Plant       @relation(fields: [plantId], references: [id])
+  vehicleType   VehicleType @relation(fields: [vehicleTypeId], references: [id])
+  priceRules    PriceRule[]
+
+  @@unique([plantId, vehicleTypeId])
+}
+
+model PriceRule {
+  id                 String           @id @default(uuid())
+  plantVehicleTypeId String
+  validFrom          DateTime
+  validTo            DateTime?
+  amountCents        Int
+  currency           String           @default("ARS")
+  plantVehicleType   PlantVehicleType @relation(fields: [plantVehicleTypeId], references: [id])
+
+  @@index([validFrom, validTo])
+}
+
+model Line {
+  id       String        @id @default(uuid())
+  plantId  String
+  name     String
+  isActive Boolean       @default(true)
+  plant    Plant         @relation(fields: [plantId], references: [id])
+  configs  LineConfig[]
+  slots    Slot[]
+  appts    Appointment[]
+
+  @@index([plantId, isActive])
+}
+
+model LineConfig {
+  id              String   @id @default(uuid())
+  lineId          String
+  durationMinutes Int
+  effectiveFrom   DateTime
+  maxShiftMinutes Int      @default(10)
+  line            Line     @relation(fields: [lineId], references: [id])
+
+  @@index([lineId, effectiveFrom])
+}
+
+model WeeklySchedule {
+  id        String @id @default(uuid())
+  plantId   String
+  dayOfWeek Int // 0..6 (domingo..sábado)
+  start     String // "HH:mm"
+  end       String // "HH:mm"
+  plant     Plant  @relation(fields: [plantId], references: [id])
+
+  @@index([plantId, dayOfWeek])
+}
+
+model ScheduleException {
+  id      String   @id @default(uuid())
+  plantId String
+  date    DateTime // usar sólo la parte de fecha (UTC 00:00)
+  start   String // "HH:mm"
+  end     String // "HH:mm"
+  reason  String?
+  plant   Plant    @relation(fields: [plantId], references: [id])
+
+  @@index([plantId, date])
+}
+
+model Slot {
+  id        String     @id @default(uuid())
+  plantId   String
+  lineId    String?
+  startAt   DateTime
+  endAt     DateTime
+  status    SlotStatus @default(FREE)
+  generated Boolean    @default(true) // false = “legacy” (no alinea con grilla nueva)
+
+  plant Plant @relation(fields: [plantId], references: [id])
+  line  Line? @relation(fields: [lineId], references: [id])
+
+  // Back-relation 1:1 desde Appointment (sin fields/references acá)
+  appointment Appointment?
+
+  @@unique([lineId, startAt])
+  @@index([plantId, startAt, status])
+  @@index([plantId, startAt])
+}
+
+model Vehicle {
+  id        String        @id @default(uuid())
+  dominio   String        @unique // normalizado en backend
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  appts     Appointment[]
+}
+
+model Appointment {
+  id            String  @id @default(uuid())
+  plantId       String
+  lineId        String?
+  vehicleId     String
+  vehicleTypeId String
+
+  // Único lado "fuerte" de la 1:1 con Slot
+  slotId String? @unique
+
+  startAt           DateTime
+  endAt             DateTime
+  state             AppointmentState
+  result            Result?
+  resultDescription String?
+  resultAt          DateTime?
+  inspectorUserId   String?
+
+  unitPriceCents    Int?
+  currency          String?   @default("ARS")
+  priceRuleId       String?
+  capturedAt        DateTime?
+  paymentMode       String? // "none" | "mp_online" | "mp_cash"
+  paymentExternalId String?
+  rescheduleCount   Int       @default(0)
+
+  plant       Plant       @relation(fields: [plantId], references: [id])
+  line        Line?       @relation(fields: [lineId], references: [id])
+  vehicle     Vehicle     @relation(fields: [vehicleId], references: [id])
+  vehicleType VehicleType @relation(fields: [vehicleTypeId], references: [id])
+
+  // Relación 1:1 con Slot (definida acá)
+  slot Slot? @relation(fields: [slotId], references: [id])
+
+  data AppointmentData?
+
+  // Back-relation para ExpirationLog
+  expirationLogs ExpirationLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([plantId, startAt])
+  @@index([plantId, vehicleId, startAt])
+}
+
+model AppointmentData {
+  appointmentId String   @id
+  nombre        String
+  email         String
+  telefono      String?
+  dominio       String // redundante para reportes rápidos
+  marca         String
+  modelo        String
+  anio          Int
+  combustible   FuelType
+
+  appointment Appointment @relation(fields: [appointmentId], references: [id])
+}
+
+model PaymentEvent {
+  id        String   @id @default(uuid())
+  plantId   String
+  provider  String // "MP"
+  eventId   String   @unique
+  payload   Json
+  createdAt DateTime @default(now())
+}
+
+model ExpirationLog {
+  id            String      @id @default(uuid())
+  appointmentId String
+  reason        String // "CHECKOUT_TIMEOUT" | "CASH_TIMEOUT" | "EMAIL_TIMEOUT"
+  at            DateTime    @default(now())
+  appointment   Appointment @relation(fields: [appointmentId], references: [id])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  plantId   String?
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  from      Json?
+  to        Json?
+  reason    String?
+  createdAt DateTime @default(now())
+}
+
+model User {
+  id           String       @id @default(uuid())
+  email        String       @unique
+  passwordHash String
+  name         String?
+  isActive     Boolean      @default(true)
+  roleGlobal   RoleGlobal?
+  memberships  Membership[]
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+}
+
+model Membership {
+  id      String    @id @default(uuid())
+  userId  String
+  plantId String
+  role    PlantRole
+  user    User      @relation(fields: [userId], references: [id])
+  plant   Plant     @relation(fields: [plantId], references: [id])
+
+  @@unique([userId, plantId])
+}
