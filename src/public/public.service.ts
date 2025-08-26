@@ -21,10 +21,11 @@ import {
 } from './dto/public.dto';
 import { AppointmentState, SlotStatus } from '@prisma/client';
 import { verifyLinkToken } from 'src/common/token';
+import { EmailService } from '../email/email.service';
 
 @Injectable()
 export class PublicService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService, private emailService: EmailService) {}
 
   /**
    * Días del mes con >=1 slot FREE y precio vigente para el tipo de vehículo.
@@ -398,13 +399,9 @@ export class PublicService {
     // 2) Traer el appointment con datos necesarios
     const appt = await this.prisma.appointment.findUnique({
       where: { id },
-      select: {
-        id: true,
-        state: true,
-        createdAt: true,
-        slotId: true,
-        plantId: true,
-        plant: { select: { lockMinutes: true } }, // usamos lockMinutes como “email window” (30′)
+      include: {
+        plant: { select: { lockMinutes: true, cancelReprogLimitHours: true, reschedulesLimit: true } },
+        data: { select: { email: true } }, // Corregido para incluir email desde appointmentData
       },
     });
     if (!appt) throw new BadRequestException('Turno inválido.');
@@ -464,7 +461,15 @@ export class PublicService {
         throw new BadRequestException('No se pudo confirmar el turno.');
       }
 
-      // TODO: enviar email de confirmación (usuario + copia a planta)
+      // Enviar correo de confirmación
+      if (!appt.data) {
+        throw new Error('Los datos del turno no están disponibles.');
+      }
+      await this.emailService.sendMail(
+        appt.data.email,
+        'Confirmación de turno',
+        `<h1>¡Tu turno ha sido confirmado!</h1><p>Gracias por verificar tu email. Tu turno está confirmado.</p>`
+      );
     });
 
     return { ok: true };
@@ -486,6 +491,7 @@ export class PublicService {
         slot: true,
         line: true,
         vehicleType: true,
+        data: { select: { email: true } }, // Corregido para incluir email desde appointmentData
       },
     });
     if (!appt) throw new NotFoundException('Turno no encontrado');
@@ -580,7 +586,15 @@ export class PublicService {
         },
       });
 
-      // TODO: Enviar email de reprogramación
+      // Enviar correo de reprogramación
+      if (!appt.data) {
+        throw new Error('Los datos del turno no están disponibles.');
+      }
+      await this.emailService.sendMail(
+        appt.data.email,
+        'Reprogramación de turno',
+        `<h1>¡Tu turno ha sido reprogramado!</h1><p>Tu nuevo turno es el ${local.toFormat('dd/MM/yyyy')} a las ${body.hour}.</p>`
+      );
 
       return {
         ok: true,
@@ -598,7 +612,7 @@ export class PublicService {
 
     const appt = await this.prisma.appointment.findUnique({
       where: { id },
-      include: { plant: true, slot: true },
+      include: { plant: true, slot: true, data: { select: { email: true } } }, // Corregido para incluir email desde appointmentData
     });
     if (!appt) throw new NotFoundException('Turno no encontrado');
 
@@ -638,7 +652,15 @@ export class PublicService {
         data: { state: AppointmentState.CANCELLED },
       });
 
-      // TODO: enviar email de cancelación con instrucciones de reintegro manual si correspondiera
+      // Enviar correo de cancelación
+      if (!appt.data) {
+        throw new Error('Los datos del turno no están disponibles.');
+      }
+      await this.emailService.sendMail(
+        appt.data.email,
+        'Cancelación de turno',
+        `<h1>Tu turno ha sido cancelado</h1><p>Si necesitas más información, contáctanos.</p>`
+      );
     });
 
     return { ok: true };
